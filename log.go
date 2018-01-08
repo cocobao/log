@@ -57,6 +57,9 @@ type Logger struct {
 }
 
 func Simple(args ...interface{}) {
+	if defaultLogLevel > log.level {
+		return
+	}
 	log.writeSimple(fmt.Sprint(args...))
 }
 
@@ -140,7 +143,10 @@ func NewLogger(rootPath string, level ...int) Logger {
 	var levelEnum = 0
 	if len(level) > 0 {
 		levelEnum = level[0]
-		if levelEnum != LoggerLevelDebug && levelEnum != LoggerLevelInfo && levelEnum != LoggerLevelError {
+		if levelEnum != LoggerLevelDebug &&
+			levelEnum != LoggerLevelInfo &&
+			levelEnum != LoggerLevelWarn &&
+			levelEnum != LoggerLevelError {
 			panic("等级不存在")
 		}
 		l.level = levelEnum
@@ -286,9 +292,27 @@ func (this *Logger) writeLogFormat(level int, log string) {
 	if len(this.rootPath) == 0 {
 		fmt.Printf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log)
 	} else {
-		_, err := Write(this.file, fmt.Sprintf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log))
+		sta, _ := this.isFileExist(this.nowFile)
+		if !sta {
+			fmt.Println("log fail not found")
+			if this.file != nil {
+				this.file.Close()
+				this.file = nil
+			}
+
+			err := this.getLogFile()
+			if err != nil {
+				fmt.Println("getLogFile fail", err)
+				return
+			}
+		}
+		b, err := Write(this.file, fmt.Sprintf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log))
 		if err != nil {
 			panic(err)
+		}
+
+		if !b {
+			fmt.Println("write log file fail")
 		}
 	}
 }
