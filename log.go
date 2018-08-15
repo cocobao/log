@@ -1,6 +1,7 @@
 package log
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -34,6 +35,8 @@ const (
 	defaultLogFileCount int   = 30
 	defaultLogLevel     int   = LoggerLevelDebug
 	defaultMaxSize      int64 = 50 * 1024 * 1024
+	isLogCache          bool  = false
+	logCacheCount       int   = 20
 )
 
 type colorAttribute int
@@ -46,6 +49,13 @@ var (
 	log Logger
 )
 
+type logCache struct {
+	isCache       bool
+	cacheCount    int
+	nowCacheCount int
+	logBuff       *bytes.Buffer
+}
+
 type Logger struct {
 	rootPath     string    // desc:	absolute path
 	file         *os.File  // desc:	log file
@@ -54,6 +64,7 @@ type Logger struct {
 	nextDay      time.Time // desc: 	下一次创建文件的时间
 	nowFile      string
 	nowFileCount int
+	lc           logCache
 }
 
 func Simple(args ...interface{}) {
@@ -139,6 +150,9 @@ func NewLogger(rootPath string, level ...int) Logger {
 	l.depth = defaultCallDepth
 	l.rootPath = rootPath
 	l.level = defaultLogLevel
+	l.lc.isCache = isLogCache
+	l.lc.cacheCount = logCacheCount
+	l.lc.logBuff = bytes.NewBuffer([]byte{})
 
 	var levelEnum = 0
 	if len(level) > 0 {
@@ -160,12 +174,14 @@ func NewLogger(rootPath string, level ...int) Logger {
 	return l
 }
 
+//设置被调用深度
 func (this *Logger) SetCallDepth(depth int) {
 	if depth > 0 {
 		this.depth = depth
 	}
 }
 
+//打开日志文件
 func (this *Logger) getLogFile() error {
 	rootPath := this.rootPath
 	flag, err := this.isFileExist(rootPath)
@@ -175,7 +191,7 @@ func (this *Logger) getLogFile() error {
 	}
 
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("get file exist state fail,%v", err))
 	}
 
 	if flag == false {
@@ -200,6 +216,7 @@ func (this *Logger) getLogFile() error {
 	return err
 }
 
+//文件切割
 func (this *Logger) fileTooBigToCut() {
 	if s, err := this.fileSize(this.nowFile); err == nil {
 		if s > defaultMaxSize {
@@ -210,13 +227,13 @@ func (this *Logger) fileTooBigToCut() {
 			if err != nil || f == nil {
 				return
 			}
-
-			this.file = f
 			this.removeSurplusFile()
+			this.file = f
 		}
 	}
 }
 
+//删除最旧的一个日志文件
 func (this *Logger) removeSurplusFile() {
 	dir, err := os.Open(this.rootPath)
 	if err != nil {
@@ -252,7 +269,7 @@ func (this *Logger) removeSurplusFile() {
 func (this *Logger) writeLogFormat(level int, log string) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println(err)
+			fmt.Println("writeLog fail,", err)
 		}
 	}()
 
@@ -260,7 +277,7 @@ func (this *Logger) writeLogFormat(level int, log string) {
 	now := time.Now()
 	if now.Unix() > this.nextDay.Unix() { // 超过了原定的下次创建时间, 重新创建一个文件
 		if err := this.getLogFile(); err != nil {
-			panic(err)
+			panic(fmt.Errorf("getLogFile fail,%s", err.Error()))
 		}
 	} else {
 		this.fileTooBigToCut()
@@ -289,12 +306,27 @@ func (this *Logger) writeLogFormat(level int, log string) {
 		file = v[len(v)-1]
 	}
 
+	writeLog := fmt.Sprintf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log)
+
+	//日志缓存输出
+	if this.lc.isCache {
+		this.lc.logBuff.WriteString(writeLog)
+		if this.lc.nowCacheCount++; this.lc.nowCacheCount > this.lc.cacheCount {
+			writeLog = this.lc.logBuff.String()
+			this.lc.logBuff = bytes.NewBuffer([]byte{})
+			this.lc.nowCacheCount = 0
+		} else {
+			return
+		}
+	}
+
 	if len(this.rootPath) == 0 {
-		fmt.Printf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log)
+		fmt.Printf(writeLog)
 	} else {
 		sta, _ := this.isFileExist(this.nowFile)
 		if !sta {
-			fmt.Println("log fail not found")
+			//日志文件被人删除了，重新创建一个
+			// fmt.Println("log file not found")
 			if this.file != nil {
 				this.file.Close()
 				this.file = nil
@@ -306,9 +338,9 @@ func (this *Logger) writeLogFormat(level int, log string) {
 				return
 			}
 		}
-		b, err := Write(this.file, fmt.Sprintf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log))
+		b, err := Write(this.file, writeLog)
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("write fail,%v", err))
 		}
 
 		if !b {
