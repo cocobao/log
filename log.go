@@ -336,8 +336,9 @@ func NewFlowLogger(rootPath string, level ...int) Logger {
 }
 
 func NewLogger(rootPath string, level ...int) Logger {
-	*log = NewLog(rootPath, level...)
-	return *log
+	l := NewLog(rootPath, level...)
+	log = &l
+	return l
 }
 
 func (this *Logger) logAsyncWrite() {
