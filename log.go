@@ -1,7 +1,11 @@
+/*
+* description: 异步输出本地日志
+* author: yebz
+* date: 2019-06-10
+ */
 package log
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +15,39 @@ import (
 	"strings"
 	"time"
 )
+
+type Log interface {
+	/*新建一个日志对象*/
+	NewLog(rootPath string, level ...int) Logger
+
+	NewLogger(rootPath string, level ...int) Logger
+
+	/*设置单个日志文件最大大小*/
+	SetLogSize(s int64)
+
+	/*直接输出日志，不带任何格式*/
+	Simple(args ...interface{})
+
+	/*debug级别日志输出*/
+	Debug(args ...interface{})
+	/*debug级别格式化日志输出*/
+	Debugf(format string, args ...interface{})
+
+	/*info级别日志输出*/
+	Info(args ...interface{})
+	/*info级别格式化日志输出*/
+	Infof(format string, args ...interface{})
+
+	/*warn级别日志输出*/
+	Warn(args ...interface{})
+	/*warn级别格式化日志输出*/
+	Warnf(format string, args ...interface{})
+
+	/*error级别日志输出*/
+	Error(args ...interface{})
+	/*error级别格式化日志输出*/
+	Errorf(format string, args ...interface{})
+}
 
 const (
 	black colorAttribute = iota + 30
@@ -31,12 +68,13 @@ const (
 )
 
 const (
-	defaultCallDepth    int   = 2
-	defaultLogFileCount int   = 30
-	defaultLogLevel     int   = LoggerLevelDebug
-	defaultMaxSize      int64 = 50 * 1024 * 1024
-	isLogCache          bool  = false
-	logCacheCount       int   = 20
+	defaultCallDepth int = 2
+	defaultLogLevel  int = LoggerLevelDebug
+)
+
+var (
+	LogFileCount int   = 30
+	MaxSize      int64 = 100 * 1024 * 1024
 )
 
 type colorAttribute int
@@ -46,88 +84,213 @@ func color(s string, c colorAttribute) string {
 }
 
 var (
-	log Logger
+	log *Logger
 )
 
-type logCache struct {
-	isCache       bool
-	cacheCount    int
-	nowCacheCount int
-	logBuff       *bytes.Buffer
+type logInfo struct {
+	level    int
+	isSimple bool
+	logmsg   string
+	line     int
+	file     string
 }
 
 type Logger struct {
-	rootPath     string    // desc:	absolute path
-	file         *os.File  // desc:	log file
-	level        int       // option: 	LoggerLevelDebug\LoggerLevelInfo\LoggerLevelError
-	depth        int       // default: 2
-	nextDay      time.Time // desc: 	下一次创建文件的时间
+	rootPath     string    // 绝对路径
+	file         *os.File  // 日志文件
+	level        int       // 级别
+	depth        int       // 深度: 2
+	nextDay      time.Time // 下一次创建文件的时间
 	nowFile      string
 	nowFileCount int
-	lc           logCache
+	PrefixHeader string
+	logchan      chan *logInfo
+}
+
+func SetLogSize(s int64) {
+	MaxSize = s
+}
+
+func SetLogCount(n int) {
+	LogFileCount = n
 }
 
 func Simple(args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if defaultLogLevel > log.level {
 		return
 	}
-	log.writeSimple(fmt.Sprint(args...))
+
+	log.logchan <- &logInfo{
+		level:    0,
+		logmsg:   fmt.Sprint(args...),
+		isSimple: true,
+		file:     "",
+		line:     0,
+	}
 }
 
 func Debug(args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelDebug < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelDebug, fmt.Sprint(args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelDebug,
+		logmsg:   fmt.Sprint(args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Debugf(format string, args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelDebug < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelDebug, fmt.Sprintf(format, args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		panic(errors.New("获取行数失败"))
+	}
+
+	log.logchan <- &logInfo{
+		level:    LoggerLevelDebug,
+		logmsg:   fmt.Sprintf(format, args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Info(args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelInfo < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelInfo, fmt.Sprint(args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelInfo,
+		logmsg:   fmt.Sprint(args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Infof(format string, args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelInfo < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelInfo, fmt.Sprintf(format, args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelInfo,
+		logmsg:   fmt.Sprintf(format, args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Warn(args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelWarn < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelWarn, fmt.Sprint(args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelWarn,
+		logmsg:   fmt.Sprint(args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Warnf(format string, args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelWarn < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelWarn, fmt.Sprintf(format, args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelWarn,
+		logmsg:   fmt.Sprintf(format, args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Error(args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelError < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelError, fmt.Sprint(args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelError,
+		logmsg:   fmt.Sprint(args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Errorf(format string, args ...interface{}) {
+	if log == nil {
+		NewLogger("")
+	}
 	if LoggerLevelError < log.level {
 		return
 	}
-	log.writeLogFormat(LoggerLevelError, fmt.Sprintf(format, args...))
+	_, file, line, ok := runtime.Caller(1)
+	if ok == false {
+		return
+	}
+	log.logchan <- &logInfo{
+		level:    LoggerLevelError,
+		logmsg:   fmt.Sprintf(format, args...),
+		isSimple: false,
+		file:     file,
+		line:     line,
+	}
 }
 
 func Write(file *os.File, content string) (bool, error) {
@@ -139,7 +302,7 @@ func Write(file *os.File, content string) (bool, error) {
 	return true, nil
 }
 
-func NewLogger(rootPath string, level ...int) Logger {
+func NewLog(rootPath string, level ...int) Logger {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println(err)
@@ -150,9 +313,7 @@ func NewLogger(rootPath string, level ...int) Logger {
 	l.depth = defaultCallDepth
 	l.rootPath = rootPath
 	l.level = defaultLogLevel
-	l.lc.isCache = isLogCache
-	l.lc.cacheCount = logCacheCount
-	l.lc.logBuff = bytes.NewBuffer([]byte{})
+	l.logchan = make(chan *logInfo, 1000)
 
 	var levelEnum = 0
 	if len(level) > 0 {
@@ -166,23 +327,37 @@ func NewLogger(rootPath string, level ...int) Logger {
 		l.level = levelEnum
 	}
 
-	err := l.getLogFile()
-	if err != nil {
-		panic(err)
-	}
-	log = l
+	l.logAsyncWrite()
 	return l
 }
 
-//设置被调用深度
+func NewFlowLogger(rootPath string, level ...int) Logger {
+	return NewLog(rootPath, level...)
+}
+
+func NewLogger(rootPath string, level ...int) Logger {
+	*log = NewLog(rootPath, level...)
+	return *log
+}
+
+func (this *Logger) logAsyncWrite() {
+	for index := 0; index < 2; index++ {
+		go func() {
+			for {
+				logmsg := <-this.logchan
+				this.WriteLogFormat(logmsg.level, logmsg.logmsg, logmsg.isSimple, logmsg.file, logmsg.line)
+			}
+		}()
+	}
+}
+
 func (this *Logger) SetCallDepth(depth int) {
 	if depth > 0 {
 		this.depth = depth
 	}
 }
 
-//打开日志文件
-func (this *Logger) getLogFile() error {
+func (this *Logger) GetLogFile() error {
 	rootPath := this.rootPath
 	flag, err := this.isFileExist(rootPath)
 
@@ -191,7 +366,7 @@ func (this *Logger) getLogFile() error {
 	}
 
 	if err != nil {
-		panic(fmt.Errorf("get file exist state fail,%v", err))
+		panic(err)
 	}
 
 	if flag == false {
@@ -205,7 +380,7 @@ func (this *Logger) getLogFile() error {
 	nextD = time.Date(nextD.Year(), nextD.Month(), nextD.Day(), 0, 0, 0, 0, nextD.Location())
 	this.nextDay = nextD
 
-	logPath := fmt.Sprintf("%s/%s.log", rootPath, date)
+	logPath := fmt.Sprintf("%s/%s%s.log", rootPath, this.PrefixHeader, date)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.ModePerm)
 	if f == nil {
 		return errors.New("log文件打开失败")
@@ -216,24 +391,22 @@ func (this *Logger) getLogFile() error {
 	return err
 }
 
-//文件切割
 func (this *Logger) fileTooBigToCut() {
 	if s, err := this.fileSize(this.nowFile); err == nil {
-		if s > defaultMaxSize {
-			now := time.Now().Unix()
-			os.Rename(this.nowFile, fmt.Sprintf("%s.%v", this.nowFile, now))
+		if s > MaxSize {
+			os.Rename(this.nowFile, fmt.Sprintf("%s.%v", this.nowFile, time.Now().Format("2006_01_02_15_04_05")))
 
 			f, err := os.OpenFile(this.nowFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.ModePerm)
 			if err != nil || f == nil {
 				return
 			}
-			this.removeSurplusFile()
+
 			this.file = f
+			this.removeSurplusFile()
 		}
 	}
 }
 
-//删除最旧的一个日志文件
 func (this *Logger) removeSurplusFile() {
 	dir, err := os.Open(this.rootPath)
 	if err != nil {
@@ -250,14 +423,22 @@ func (this *Logger) removeSurplusFile() {
 	for _, fi := range fis {
 		name := fi.Name()
 		if strings.Contains(name, ".log") {
-			files = append(files, name)
+			if len(this.PrefixHeader) > 0 {
+				if strings.HasPrefix(name, this.PrefixHeader) {
+					files = append(files, name)
+				}
+			} else {
+				if strings.HasPrefix(name, "2") {
+					files = append(files, name)
+				}
+			}
 		}
 	}
-	if len(files) > defaultLogFileCount {
+	if len(files) > LogFileCount {
 		s := sort.StringSlice(files)
 		sort.Sort(s)
 
-		surcount := len(files) - defaultLogFileCount
+		surcount := len(files) - LogFileCount
 		for index := 0; index < surcount; index++ {
 			f := s[index]
 			os.Remove(path.Join(this.rootPath, f))
@@ -266,18 +447,18 @@ func (this *Logger) removeSurplusFile() {
 }
 
 // 格式化的写入日志,level是一个枚举,如LoggerLevelError,log是日志字符串
-func (this *Logger) writeLogFormat(level int, log string) {
+func (this *Logger) WriteLogFormat(level int, logstr string, isSimple bool, file string, line int) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println("writeLog fail,", err)
+			fmt.Println(err)
 		}
 	}()
 
 	// 时间
 	now := time.Now()
 	if now.Unix() > this.nextDay.Unix() { // 超过了原定的下次创建时间, 重新创建一个文件
-		if err := this.getLogFile(); err != nil {
-			panic(fmt.Errorf("getLogFile fail,%s", err.Error()))
+		if err := this.GetLogFile(); err != nil {
+			panic(err)
 		}
 	} else {
 		this.fileTooBigToCut()
@@ -285,62 +466,54 @@ func (this *Logger) writeLogFormat(level int, log string) {
 
 	time := time.Unix(now.Unix(), 0).Format("2006-01-02 15:04:05")
 
-	var flag string
+	var (
+		logstring string
+	)
 
-	switch level {
-	case LoggerLevelDebug:
-		flag = color("DEBUG", blue)
-	case LoggerLevelInfo:
-		flag = color("INFO", green)
-	case LoggerLevelWarn:
-		flag = color("WARN", yellow)
-	case LoggerLevelError:
-		flag = color("ERROR", red)
-	}
+	if isSimple {
+		logstring = fmt.Sprintf("%s\n", logstr)
+	} else {
+		var (
+			flag string
+		)
 
-	_, file, line, ok := runtime.Caller(this.depth)
-	if ok == false {
-		panic(errors.New("获取行数失败"))
-	}
-	if v := strings.Split(file, "/"); len(v) > 0 {
-		file = v[len(v)-1]
-	}
-
-	writeLog := fmt.Sprintf("%s[%s][%s:%d]  %s\n", time, flag, file, line, log)
-
-	//日志缓存输出
-	if this.lc.isCache {
-		this.lc.logBuff.WriteString(writeLog)
-		if this.lc.nowCacheCount++; this.lc.nowCacheCount > this.lc.cacheCount {
-			writeLog = this.lc.logBuff.String()
-			this.lc.logBuff = bytes.NewBuffer([]byte{})
-			this.lc.nowCacheCount = 0
-		} else {
-			return
+		switch level {
+		case LoggerLevelDebug:
+			flag = color("DEBUG", blue)
+		case LoggerLevelInfo:
+			flag = color("INFO", green)
+		case LoggerLevelWarn:
+			flag = color("WARN", yellow)
+		case LoggerLevelError:
+			flag = color("ERROR", red)
 		}
+
+		if v := strings.Split(file, "/"); len(v) > 0 {
+			file = v[len(v)-1]
+		}
+		logstring = fmt.Sprintf("%s[%s][%s:%d]  %s\n", time, flag, file, line, logstr)
 	}
 
 	if len(this.rootPath) == 0 {
-		fmt.Printf(writeLog)
+		fmt.Printf(logstring)
 	} else {
 		sta, _ := this.isFileExist(this.nowFile)
 		if !sta {
-			//日志文件被人删除了，重新创建一个
-			// fmt.Println("log file not found")
+			fmt.Println("log fail not found")
 			if this.file != nil {
 				this.file.Close()
 				this.file = nil
 			}
 
-			err := this.getLogFile()
+			err := this.GetLogFile()
 			if err != nil {
-				fmt.Println("getLogFile fail", err)
+				fmt.Println("GetLogFile fail", err)
 				return
 			}
 		}
-		b, err := Write(this.file, writeLog)
+		b, err := Write(this.file, logstring)
 		if err != nil {
-			panic(fmt.Errorf("write fail,%v", err))
+			panic(err)
 		}
 
 		if !b {
@@ -349,7 +522,7 @@ func (this *Logger) writeLogFormat(level int, log string) {
 	}
 }
 
-func (this *Logger) writeSimple(log string) {
+func (this *Logger) WriteSimple(log string) {
 	if len(this.rootPath) == 0 {
 		fmt.Printf("%s\n", log)
 	} else {
